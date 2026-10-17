@@ -1,0 +1,6 @@
+#GECCO工业挑战赛饮用水水质数据集
+https://zenodo.org/records/3884444
+
+#TSB-UAD-Public/ TSB-AD-U/M的地址在pdf中开源
+
+#其中UCR, LTDB，TAO用的TSB-AD, GECCO单独下载，其余都是TSB-UAD-Public
