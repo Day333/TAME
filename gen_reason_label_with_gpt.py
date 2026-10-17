@@ -9,17 +9,19 @@ warnings.filterwarnings("ignore")
 from tqdm import tqdm
 import sys
 
-# Path anonymized
-sys.path.append('/path/to/project/Time-RA')
+#auto resolve path
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import base64
 from model.api_model import APIModel
-from prompts.prompt_llama_multi_ano import *
+#correct uni import
+from prompts.prompt_llama_anoclf_reason import *
+
 
 AZURE_OPENAI_ENDPOINT = ""
 AZURE_OPENAI_KEY = ""
-OPENREVIEW_USERNAME = ""
-OPENREVIEW_PASSWORD = ""
-LOCAL_HF_PATH = "models"
+#delete uselessness
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
@@ -32,10 +34,16 @@ def parse_args():
         "--openai_key", type=str, default=AZURE_OPENAI_KEY,
         help="API key to authenticate with OpenAI. Can be set via this argument or through the OPENAI_API_KEY environment variable."
     )
+    #compatible OPENAI URL
     parser.add_argument(
-        "--openai_client_type", type=str, default="azure_keyless", choices=["openai", "azure_openai", "hf_model", "azure_keyless", "gemini", "deepseek-r1", "llama-70b"],
-        help="Specify the OpenAI client type to use: 'openai' for standard OpenAI API or 'azure_openai' for Azure-hosted OpenAI services."
+        "--base_url", type=str, default="",
+        help="base URL for --openai_client_type openai_compatible, "
+             "e.g. https://api.siliconflow.cn/v1"
     )
+    parser.add_argument(
+        "--openai_client_type", type=str, default="openai_compatible", choices=["openai", "azure_openai", "hf_model", "azure_keyless", "openai_compatible", "gemini", "deepseek-r1", "llama-70b"],
+        help="Specify the OpenAI client type to use: 'openai' for standard OpenAI API or 'azure_openai' for Azure-hosted OpenAI services."
+    )#use
     parser.add_argument(
         "--endpoint", type=str, default=AZURE_OPENAI_ENDPOINT,
         help="For Azure OpenAI: custom endpoint to access the API. Should be in the format 'https://<your-endpoint>.openai.azure.com'."
@@ -46,15 +54,20 @@ def parse_args():
     parser.add_argument(
         "--model_name", type=str, default="gpt-4o_2024-11-20",
         help="Specifies which LLM model to use."
-    )
+    )#use
     parser.add_argument(
         "--model_path", type=str, default="gpt-4o_2024-11-20",
     )
     parser.add_argument(
         "--data_name", type=str, default="RATs-Multi-TSImage_Reason", help="Dataset name."
-    )
+    )#use
+    # where to find the data.json
     parser.add_argument(
-        "--saving_path", type=str, default="dataset/reason_data", help="Directory where results, logs, and outputs will be stored."
+        "--data_dir", type=str, default=os.path.join(REPO_ROOT, "data"),
+        help="Directory that contains {data_name}.json"
+    )#use
+    parser.add_argument(
+        "--saving_path", type=str, default=os.path.join(REPO_ROOT, "out"), help="Directory where results, logs, and outputs will be stored."
     )
     parser.add_argument(
         "--device", type=str, default='cuda',
@@ -93,6 +106,19 @@ def parse_args():
             assert isinstance(args.api_version, str), ("Please specify the `--api_version` argument OR set the OPENAI_API_VERSION environment variable.")
             os.environ['OPENAI_API_VERSION'] = args.api_version
 
+    # 第三方兼容api (Qwen/...)  env
+    if args.openai_client_type == "openai_compatible":
+        if args.openai_key:
+            os.environ['COMPAT_API_KEY'] = args.openai_key
+        if args.base_url:
+            os.environ['COMPAT_API_BASE'] = args.base_url
+        assert os.environ.get('COMPAT_API_KEY'), (
+            "Missing API key: pass --openai_key or set the COMPAT_API_KEY env var."
+        )
+        assert os.environ.get('COMPAT_API_BASE'), (
+            "Missing base URL: pass --base_url or set the COMPAT_API_BASE env var."
+        )
+
     if args.openai_client_type == "hf_model":
         os.environ['HF_MODEL_PATH'] = args.model_path
 
@@ -127,12 +153,14 @@ if __name__ == '__main__':
     is_obs = args.is_obs
 
     data_name = args.data_name
-    # Path anonymized
-    base_path = "/path/to/data/Time-RA/"
+    #auto resolve the path
+    base_path = args.data_dir + os.sep
     file_path = base_path + f"{data_name}.json"
     with open(file_path, 'r', encoding='utf-8') as file:
         data = json.load(file)
-    saving_path = f"{args.saving_path}/{data_name}_Reason_by_{args.model_name}.json"
+    #硅基流动的模型名斜杠问题，用其他的网页另说
+    model_tag = args.model_name.replace("/", "-").replace("\\", "-")
+    saving_path = f"{args.saving_path}/{data_name}_Reason_by_{model_tag}.json"
     if is_img:
         if not is_obs:
             saving_path = f"{args.saving_path}/{data_name}_Reason_by_{args.model_name}_img_wo_obs.json"
@@ -164,6 +192,11 @@ if __name__ == '__main__':
             if idx in merge_json[key].keys():
                 continue
 
+            #null
+            if data[key][idx] is None:
+                print(f"\nSkipping - record '{idx}' is null in the source file")
+                continue
+
             observation = data[key][idx]['Observation']
             label = data[key][idx]['Label']
             source = data[key][idx]['Source']
@@ -174,7 +207,8 @@ if __name__ == '__main__':
                     observation = "Please refer to the attached picture."
 
                 user_prompt = USER_DETECTION_PROMPT_IMG.format(our_label=label, our_source=source, our_observation=observation)
-                if "llava" or "gemma" in args.model_name:
+                #ori:if"llava" or "gemma in args.model_name"
+                if "llava" in args.model_name or "gemma" in args.model_name:
                     user_prompt = USER_DETECTION_PROMPT_IMG_LLAVA.format(our_label=label, our_source=source, our_observation=observation)
                 res, _ = api_model(user_prompt, [], img=base_path + figurepath)
             else:
@@ -188,6 +222,8 @@ if __name__ == '__main__':
             action = action_match.group(1).strip() if action_match else ""
 
             action = re.sub(r'(?:\\boxed\d+{)?\d*\.?\s*(.*?)}?$', r'\1', action).strip()
+
+            action = re.sub(r'\\boxed\{(.+)$', r"\1", action).strip()
 
             if re.search(r'\\boxed\d?\{.*?\}', thought):
                 thought = re.sub(r'\\boxed\d?\{(.*?)\}', r'\1', thought)

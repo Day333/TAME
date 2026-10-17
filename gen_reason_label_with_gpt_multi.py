@@ -9,18 +9,21 @@ warnings.filterwarnings("ignore")
 from tqdm import tqdm
 import sys
 
-PROJECT_ROOT = '/path/to/project/root'#占位符
-HUGGINGFACE_PATH = '/path/to/huggingface'
-sys.path.append(f'{PROJECT_ROOT}/Time-RA')
+# 【补丁④-a】原版是写死的匿名化占位符:
+#     PROJECT_ROOT = '/path/to/project/root'
+#     HUGGINGFACE_PATH = '/path/to/huggingface'
+#     sys.path.append(f'{PROJECT_ROOT}/Time-RA')
+#   改为自动定位 —— 本文件在 labeling/ 下,上一级就是 time-ra-fixed/
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 import base64
 
 from model.api_model import APIModel
 from prompts.prompt_llama_multi_ano import *
 AZURE_OPENAI_ENDPOINT = "" 
 AZURE_OPENAI_KEY = ""
-OPENREVIEW_USERNAME = ""
-OPENREVIEW_PASSWORD = ""
-LOCAL_HF_PATH = "/path/to/huggingface/Llama-3.1-8B-Instruct"
+
 
 #用户就可以在命令行里灵活指定模型、数据集、保存路径、设备等，而不用改代码，parser解析器
 def parse_args():
@@ -31,8 +34,14 @@ def parse_args():
         "--openai_key", type=str, default=AZURE_OPENAI_KEY,
         help="API key to authenticate with OpenAI. Can be set via this argument or through the OPENAI_API_KEY environment variable."
     )
+    #
     parser.add_argument(
-        "--openai_client_type", type=str, default="azure_keyless", choices=["openai", "azure_openai", "hf_model", "azure_keyless", "gemini", "deepseek-r1", "llama-70b"],
+        "--base_url", type=str, default="",
+        help="base URL for --openai_client_type openai_compatible, "
+             "e.g. https://api.siliconflow.cn/v1"
+    )
+    parser.add_argument(
+        "--openai_client_type", type=str, default="openai_compatible", choices=["openai", "azure_openai", "hf_model", "azure_keyless", "openai_compatible", "gemini", "deepseek-r1", "llama-70b"],
         help="Specify the OpenAI client type to use: 'openai' for standard OpenAI API or 'azure_openai' for Azure-hosted OpenAI services."
     )
 
@@ -58,9 +67,14 @@ def parse_args():
     parser.add_argument(
         "--data_name", type=str, default="RATs-Multi-TSImage_Reason", help="Dataset name."
     )
+    #
+    parser.add_argument(
+        "--data_dir", type=str, default=os.path.join(REPO_ROOT, "data"),
+        help="Directory that contains {data_name}.json"
+    )
     # Output directories
     parser.add_argument(
-        "--saving_path", type=str, default="dataset/reason_data", help="Directory where results, logs, and outputs will be stored."
+        "--saving_path", type=str, default=os.path.join(REPO_ROOT, "out"), help="Directory where results, logs, and outputs will be stored."
     )
 
     # System configuration
@@ -106,6 +120,19 @@ def parse_args():
                                                        "OPENAI_API_VERSION environment variable.")
             os.environ['OPENAI_API_VERSION'] = args.api_version
 
+    #
+    if args.openai_client_type == "openai_compatible":
+        if args.openai_key:
+            os.environ['COMPAT_API_KEY'] = args.openai_key
+        if args.base_url:
+            os.environ['COMPAT_API_BASE'] = args.base_url
+        assert os.environ.get('COMPAT_API_KEY'), (
+            "Missing API key: pass --openai_key or set the COMPAT_API_KEY env var."
+        )
+        assert os.environ.get('COMPAT_API_BASE'), (
+            "Missing base URL: pass --base_url or set the COMPAT_API_BASE env var."
+        )
+
     if args.openai_client_type == "hf_model":   #please enroll your local model
         os.environ['HF_MODEL_PATH'] = args.model_path
     print("===================================================================")
@@ -149,11 +176,14 @@ if __name__ == '__main__':
     is_img = False
     is_obs = args.is_obs
 
-    base_path = f"{HUGGINGFACE_PATH}/Time-RA/"
+    #
+    base_path = args.data_dir
     file_path = os.path.join(base_path, f"{data_name}.json")
     with open(file_path, 'r', encoding='utf-8') as file:
         data = json.load(file)
-    saving_path = os.path.join(args.saving_path, f"{data_name}_Reason_by_{args.model_name}.json")
+    #
+    model_tag = args.model_name.replace("/", "-").replace("\\", "-")
+    saving_path = os.path.join(args.saving_path, f"{data_name}_Reason_by_{model_tag}.json")
     if is_img:
         if not is_obs:
             saving_path = os.path.join(args.saving_path, f"{data_name}_Reason_by_{args.model_name}_img_wo_obs.json")
@@ -188,7 +218,13 @@ if __name__ == '__main__':
             if idx in merge_json[key].keys():
                 continue
 
-            observation = data[key][idx]['Time_series']
+            # null
+            if data[key][idx] is None:
+                print(f"\nSkipping - record '{idx}' is null in the source file")
+                continue
+
+            #字段名应该叫Observation而不是Time Series
+            observation = data[key][idx]['Observation']
             label = data[key][idx]['Label']
             source = data[key][idx]['Source']
             figurepath = data[key][idx]['FigurePath'].replace(".pdf", ".jpg")
@@ -213,6 +249,8 @@ if __name__ == '__main__':
             action = action_match.group(1).strip() if action_match else ""
 
             action = re.sub(r'(?:\\boxed\d+{)?\d*\.?\s*(.*?)}?$', r'\1', action).strip()
+            # 
+            action = re.sub(r'\\boxed\{(.+)$', r"\1", action).strip()
             action = action.strip().replace("anomaly", "Anomaly")
             if re.search(r'\\boxed\d?\{.*?\}', thought):
                 thought = re.sub(r'\\boxed\d?\{(.*?)\}', r'\1', thought).strip()
