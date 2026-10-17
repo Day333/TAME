@@ -1,0 +1,105 @@
+TAME/
+├── dataprocessing/
+│   ├── preprocess_uni.py             
+│   └── preprocess_multi.py            
+├── labeling/
+│   ├── gen_reason_label_with_gpt.py           
+│   └── gen_reason_label_with_gpt_multi.py     
+├── model/
+│   ├── api_model.py                   
+│   └── hf_model.py                    
+├── prompts/
+│   ├── prompt.py                      
+│   ├── prompt_llama_anoclf_reason.py  (14 类 + Normal)
+│   └── prompt_llama_multi_ano.py      ( 6 类 + Normal)
+├── data/            <- 原始数据放这里(目录名固定)
+└── out/             <- 标注结果输出(不存在会自动创建)
+
+
+################################        HOW          ################################
+conda create -n tame python=3.11 -y
+conda activate tame
+
+# 依赖
+pip install torch transformers accelerate tqdm numpy scikit-learn
+pip install openai azure-identity
+pip install pyreadr          # 只有跑 GECCO(.rds 文件)才需要
+
+
+
+data-set
+#  univariate:   data/Uni/<source_name>/*.csv 或 *.out
+#  multivariate:   data/Multi/<source_name>/*.csv 或 *.out 或 *.rds
+
+#  支持的原始格式:
+#     (a) 两列 "value,label"         —— 有无表头都可以, 脚本自动识别
+#     (b) 宽表 "ch1,ch2,...,Label"   —— 每列一个通道, 最后一列是标签
+#     (c) 多文件 "@N" 通道         —— 如 "100@1.out" / "100@2.out", 脚本按基础名自动拼成一个多通道序列
+#     (d) R 数据文件 .rds 
+
+#  原始数据长什么样:
+python dataprocessing/preprocess_uni.py --inspect
+python dataprocessing/preprocess_multi.py --inspect
+
+
+#  3. 预处理
+
+# list sources
+python dataprocessing/preprocess_uni.py --list
+python dataprocessing/preprocess_multi.py --list
+
+# 单个预处理
+python dataprocessing/preprocess_uni.py --source yahoo
+python dataprocessing/preprocess_uni.py --source UCR
+python dataprocessing/preprocess_multi.py --source TAO
+python dataprocessing/preprocess_multi.py --source GECCO
+
+# 名字里带逗号要加引号
+python dataprocessing/preprocess_multi.py --source "MITDB,SVDB,andLTDB"
+
+# 产物: data/uni_<name>.json  /  data/multi_<name>.json
+# 检查产物是否符合标注脚本的接口
+python dataprocessing/preprocess_uni.py --verify
+python dataprocessing/preprocess_multi.py --verify
+
+#  4. 标注labeling
+#设置环境和API key
+# Linux / macOS
+export COMPAT_API_KEY="sk-【key】"
+export COMPAT_API_BASE="https://api.siliconflow.cn/v1"
+
+# Windows PowerShell
+$env:COMPAT_API_KEY="sk-【key】"
+$env:COMPAT_API_BASE="https://api.siliconflow.cn/v1"
+
+# Windows cmd
+set COMPAT_API_KEY=sk-【key】
+set COMPAT_API_BASE=https://api.siliconflow.cn/v1
+
+
+#4.2uni-labeling
+python labeling/gen_reason_label_with_gpt.py --openai_client_type openai_compatible --model_name Qwen/Qwen2.5-7B-Instruct --data_name uni_yahoo --data_dir data --saving_path out
+
+#  4.3 multi-labeling
+python labeling/gen_reason_label_with_gpt_multi.py --openai_client_type openai_compatible --model_name Qwen/Qwen2.5-7B-Instruct --data_name multi_TAO --data_dir data --saving_path out
+
+
+#  5. 换模型 / 换平台
+
+#  代码不用改, 只改 --model_name + COMPAT_API_BASE (+ key)
+#
+#  平台                 Base URL                                          模型名示例
+#  ------------------   -----------------------------------------------   -----------------------------
+#  硅基流动             https://api.siliconflow.cn/v1                      Qwen/Qwen2.5-7B-Instruct
+#  阿里云百炼(千问)    https://dashscope.aliyuncs.com/compatible-mode/v1  qwen-plus / qwen-turbo
+#  DeepSeek 官方        https://api.deepseek.com/v1                       deepseek-chat / deepseek-reasoner
+#  Kimi (Moonshot)      https://api.moonshot.cn/v1                        moonshot-v1-8k
+#  智谱                 https://open.bigmodel.cn/api/paas/v4              glm-4-flash / glm-4-air
+#  火山引擎(豆包)       https://ark.cn-beijing.volces.com/api/v3           填"推理接入点 ID" (ep-xxxx)
+#
+#  模型名以各平台官方文档为准。
+
+
+#  6. 本地模型
+python labeling/gen_reason_label_with_gpt.py --openai_client_type hf_model --model_path /path/to/local/model --model_name my-model --data_name uni_yahoo --data_dir data --saving_path out
+
